@@ -199,25 +199,63 @@ st.caption(f"在途提取明细：订购总表 {src_order} + 出货单 {src_tran
 
 if src_otw != out_otw:
     st.warning(
-        f"在途差额 {src_otw - out_otw} 件：以下 SKU 在源文件中有在途量，"
-        "但库存表中不存在（通常为未建档的新款），因此未加入总表。"
-        "请在库存表中补建这些 SKU 后重新生成。"
+        f"在途差额 {src_otw - out_otw} 件：部分 SKU 在源文件中有在途量，"
+        "但库存表中不存在，已在下方按【🟢 新款 / 🔴 需检查】分类列出。"
     )
 
 st.dataframe(result, use_container_width=True, height=520)
 
-# 在途来源中存在、但库存表里没有的 SKU（新款还没入库的情况），提示出来
+# 在途来源中存在、但库存表里没有的 SKU，按【新款 / 需检查】分类提示
 unmatched = {k: v for k, v in combined.items() if k not in matched_keys}
 if unmatched:
-    with st.expander(
-        f"⚠️ {len(unmatched)} 个在途 SKU 在库存表中不存在（合计 {sum(unmatched.values())} 件，即上方差额来源）",
-        expanded=(src_otw != out_otw),
-    ):
-        un_df = pd.DataFrame(
-            [(f"{sku}-{size}", qty) for (sku, size), qty in sorted(unmatched.items())],
-            columns=["Seller SKU", "On_the_way"],
+    # 按主 SKU 聚合各尺码在途数量
+    by_sku: dict = {}
+    for (sku, size), qty in unmatched.items():
+        by_sku.setdefault(sku, {})[size] = qty
+
+    # 新款判定条件：
+    #   1. 数量为标准首单量 S=60, M=80, L=40
+    #   2. SKU 不在在仓在途文件（库存表）中 —— unmatched 本身已满足
+    NEW_STYLE_PATTERN = {"S": 60, "M": 80, "L": 40}
+    new_rows, check_rows = [], []
+    for sku in sorted(by_sku):
+        sizes = by_sku[sku]
+        row = {
+            "主 SKU": sku,
+            "S": sizes.get("S", 0),
+            "M": sizes.get("M", 0),
+            "L": sizes.get("L", 0),
+        }
+        row["合计"] = row["S"] + row["M"] + row["L"]
+        if {k: sizes.get(k, 0) for k in "SML"} == NEW_STYLE_PATTERN:
+            row["状态"] = "🟢 新款"
+            new_rows.append(row)
+        else:
+            row["状态"] = "🔴 需检查"
+            check_rows.append(row)
+
+    def _style_rows(df: pd.DataFrame):
+        def color(row):
+            bg = "#d9f2d9" if "新款" in row["状态"] else "#fde2e2"
+            return [f"background-color: {bg}"] * len(row)
+        return df.style.apply(color, axis=1)
+
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        st.success(
+            f"🟢 识别到 {len(new_rows)} 个新款（标准首单量 S60 / M80 / L40，"
+            f"且未在库存表建档），合计 {int(new_df['合计'].sum())} 件。"
+            "属正常情况，建议在库存表补建 SKU 后重新生成即可对平。"
         )
-        st.dataframe(un_df, use_container_width=True)
+        st.dataframe(_style_rows(new_df), use_container_width=True, hide_index=True)
+
+    if check_rows:
+        check_df = pd.DataFrame(check_rows)
+        st.error(
+            f"🔴 {len(check_rows)} 个 SKU 不在库存表中、且数量不符合新款标准首单量，"
+            f"合计 {int(check_df['合计'].sum())} 件，请人工核对（可能是 SKU 拼写错误或漏建档）。"
+        )
+        st.dataframe(_style_rows(check_df), use_container_width=True, hide_index=True)
 
 csv_bytes = result.to_csv(index=False).encode("utf-8-sig")
 st.download_button(
