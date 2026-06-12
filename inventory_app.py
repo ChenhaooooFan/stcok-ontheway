@@ -168,12 +168,51 @@ m1.metric("SKU 行数", len(result))
 m2.metric("在仓总量", int(result["In_stock"].sum()))
 m3.metric("在途总量", int(total_otw))
 
+# ---------------------------------------------------------------------------
+# 总量对账：提取数量（源文件） vs 加入数量（生成总表）
+# ---------------------------------------------------------------------------
+
+st.subheader("🔍 总量对账（源文件 vs 生成总表）")
+
+src_instock = int(to_num(stock_df["In_stock"]).sum())
+out_instock = int(result["In_stock"].sum())
+
+src_order = sum(order_lookup.values())
+src_transit = sum(transit_lookup.values())
+src_otw = src_order + src_transit
+out_otw = int(total_otw)
+
+recon = pd.DataFrame(
+    {
+        "项目": ["在仓 In_stock", "在途 On_the_way"],
+        "提取数量（源文件）": [src_instock, src_otw],
+        "加入数量（生成总表）": [out_instock, out_otw],
+        "差额": [src_instock - out_instock, src_otw - out_otw],
+        "是否一致": [
+            "✅ 一致" if src_instock == out_instock else "⚠️ 不一致",
+            "✅ 一致" if src_otw == out_otw else "⚠️ 不一致",
+        ],
+    }
+)
+st.dataframe(recon, use_container_width=True, hide_index=True)
+st.caption(f"在途提取明细：订购总表 {src_order} + 出货单 {src_transit} = {src_otw}")
+
+if src_otw != out_otw:
+    st.warning(
+        f"在途差额 {src_otw - out_otw} 件：以下 SKU 在源文件中有在途量，"
+        "但库存表中不存在（通常为未建档的新款），因此未加入总表。"
+        "请在库存表中补建这些 SKU 后重新生成。"
+    )
+
 st.dataframe(result, use_container_width=True, height=520)
 
 # 在途来源中存在、但库存表里没有的 SKU（新款还没入库的情况），提示出来
 unmatched = {k: v for k, v in combined.items() if k not in matched_keys}
 if unmatched:
-    with st.expander(f"⚠️ {len(unmatched)} 个在途 SKU 在库存表中不存在（如新款未建档），点击查看"):
+    with st.expander(
+        f"⚠️ {len(unmatched)} 个在途 SKU 在库存表中不存在（合计 {sum(unmatched.values())} 件，即上方差额来源）",
+        expanded=(src_otw != out_otw),
+    ):
         un_df = pd.DataFrame(
             [(f"{sku}-{size}", qty) for (sku, size), qty in sorted(unmatched.items())],
             columns=["Seller SKU", "On_the_way"],
